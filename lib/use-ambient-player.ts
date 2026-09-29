@@ -16,7 +16,8 @@ const PENTATONIC = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24]
  * API — no audio files. Each mood layers three things:
  *   1. a soft consonant pad (slowly breathing chord),
  *   2. twinkling bell arpeggios that shimmer through a dreamy feedback delay,
- *   3. a gentle carbonation "fizz" of filtered noise.
+ *   3. discrete rising "bubble pops" of carbonation (short pitched blips) —
+ *      NOT a continuous noise wash, so pausing leaves total silence.
  * The result stays calming for anxiety/depression while sounding bright,
  * bubbly, and cosmic.
  */
@@ -28,12 +29,11 @@ export function useAmbientPlayer() {
   const lfoRef = useRef<OscillatorNode | null>(null)
   const voicesRef = useRef<Voice[]>([])
 
-  // sparkle / fizz layers
+  // sparkle / bubble layers
   const sparkleBusRef = useRef<GainNode | null>(null)
-  const fizzGainRef = useRef<GainNode | null>(null)
-  const fizzGateRef = useRef<GainNode | null>(null)
-  const fizzSrcRef = useRef<AudioBufferSourceNode | null>(null)
+  const bubbleBusRef = useRef<GainNode | null>(null)
   const sparkleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const bubbleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRef = useRef<Soundscape | null>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
@@ -52,14 +52,14 @@ export function useAmbientPlayer() {
     master.gain.value = volume
     master.connect(ctx.destination)
 
-    // Dreamy feedback delay gives the twinkles a spacey, galactic trail.
+    // Dreamy feedback delay gives the twinkles and bubbles a spacey trail.
     const delay = ctx.createDelay(1.0)
     delay.delayTime.value = 0.33
     const feedback = ctx.createGain()
-    feedback.gain.value = 0.38
+    feedback.gain.value = 0.36
     const delayTone = ctx.createBiquadFilter()
     delayTone.type = 'lowpass'
-    delayTone.frequency.value = 3200
+    delayTone.frequency.value = 3400
     delay.connect(delayTone)
     delayTone.connect(feedback)
     feedback.connect(delay)
@@ -91,39 +91,13 @@ export function useAmbientPlayer() {
     sparkleBus.connect(master)
     sparkleBus.connect(delay)
 
-    // Carbonation fizz: looping filtered noise, kept very soft.
-    const noiseLen = 2 * ctx.sampleRate
-    const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate)
-    const data = noiseBuf.getChannelData(0)
-    for (let i = 0; i < noiseLen; i++) data[i] = Math.random() * 2 - 1
-    const fizzSrc = ctx.createBufferSource()
-    fizzSrc.buffer = noiseBuf
-    fizzSrc.loop = true
-    const fizzBand = ctx.createBiquadFilter()
-    fizzBand.type = 'bandpass'
-    fizzBand.frequency.value = 5200
-    fizzBand.Q.value = 0.8
-    const fizzGain = ctx.createGain()
-    fizzGain.gain.value = 0.006
-    // Dedicated on/off gate the LFO never touches, so pause fully mutes the
-    // fizz regardless of where the shimmer LFO happens to be in its cycle.
-    const fizzGate = ctx.createGain()
-    fizzGate.gain.value = 0.0001
-    fizzSrc.connect(fizzBand)
-    fizzBand.connect(fizzGain)
-    fizzGain.connect(fizzGate)
-    fizzGate.connect(master)
-    // shimmer the fizz so carbonation feels alive — subtle, so it never
-    // overpowers the tiny base level and become audible white noise.
-    const fizzLfo = ctx.createOscillator()
-    fizzLfo.type = 'sine'
-    fizzLfo.frequency.value = 0.7
-    const fizzLfoGain = ctx.createGain()
-    fizzLfoGain.gain.value = 0.003
-    fizzLfo.connect(fizzLfoGain)
-    fizzLfoGain.connect(fizzGain.gain)
-    fizzSrc.start()
-    fizzLfo.start()
+    // Bubble bus — carbonation pops. Also lightly fed into the delay so pops
+    // scatter across the galaxy. All bubble sources are one-shots that stop
+    // themselves, so silence on pause is guaranteed.
+    const bubbleBus = ctx.createGain()
+    bubbleBus.gain.value = 0.9
+    bubbleBus.connect(master)
+    bubbleBus.connect(delay)
 
     ctxRef.current = ctx
     masterRef.current = master
@@ -131,8 +105,7 @@ export function useAmbientPlayer() {
     filterRef.current = filter
     lfoRef.current = lfo
     sparkleBusRef.current = sparkleBus
-    fizzGainRef.current = fizzGain
-    fizzSrcRef.current = fizzSrc
+    bubbleBusRef.current = bubbleBus
     return ctx
   }, [volume])
 
@@ -184,6 +157,34 @@ export function useAmbientPlayer() {
     o2.stop(now + 1.5)
   }, [])
 
+  // Plays one short carbonation "pop" — a quick upward pitch blip, like a
+  // single soda bubble rising and bursting. Replaces the old noise fizz.
+  const bubble = useCallback((scape: Soundscape) => {
+    const ctx = ctxRef.current
+    const bus = bubbleBusRef.current
+    if (!ctx || !bus) return
+    const now = ctx.currentTime
+    // high, glassy range; a touch of randomness per pop
+    const start = 900 + Math.random() * 1400
+    const end = start * (1.6 + Math.random() * 0.8)
+
+    const osc = ctx.createOscillator()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(start, now)
+    osc.frequency.exponentialRampToValueAtTime(end, now + 0.07)
+
+    const gain = ctx.createGain()
+    const peak = 0.05 * (0.4 + scape.fizz * 0.9)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.006)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12)
+
+    osc.connect(gain)
+    gain.connect(bus)
+    osc.start(now)
+    osc.stop(now + 0.16)
+  }, [])
+
   const scheduleSparkle = useCallback(() => {
     const scape = activeRef.current
     if (!scape) return
@@ -194,10 +195,31 @@ export function useAmbientPlayer() {
     sparkleTimerRef.current = setTimeout(scheduleSparkle, next)
   }, [twinkle])
 
+  const scheduleBubble = useCallback(() => {
+    const scape = activeRef.current
+    if (!scape) return
+    // pop in little clusters for a fizzier feel
+    const cluster = 1 + Math.floor(Math.random() * (1 + scape.fizz * 3))
+    for (let i = 0; i < cluster; i++) {
+      setTimeout(() => bubble(scape), i * (40 + Math.random() * 60))
+    }
+    // fizzier moods pop more often
+    const base = 620 - scape.fizz * 430
+    const next = base + Math.random() * 300
+    bubbleTimerRef.current = setTimeout(scheduleBubble, next)
+  }, [bubble])
+
   const stopSparkle = useCallback(() => {
     if (sparkleTimerRef.current) {
       clearTimeout(sparkleTimerRef.current)
       sparkleTimerRef.current = null
+    }
+  }, [])
+
+  const stopBubble = useCallback(() => {
+    if (bubbleTimerRef.current) {
+      clearTimeout(bubbleTimerRef.current)
+      bubbleTimerRef.current = null
     }
   }, [])
 
@@ -208,6 +230,7 @@ export function useAmbientPlayer() {
 
       stopVoices()
       stopSparkle()
+      stopBubble()
 
       const filter = filterRef.current!
       const now = ctx.currentTime
@@ -217,21 +240,6 @@ export function useAmbientPlayer() {
 
       if (lfoRef.current) {
         lfoRef.current.frequency.setValueAtTime(scape.swell, now)
-      }
-
-      // ramp the carbonation fizz to this mood's level
-      const fizzGain = fizzGainRef.current
-      const fizzGate = fizzGateRef.current
-      if (fizzGain) {
-        const target = 0.006 + scape.fizz * 0.05
-        fizzGain.gain.cancelScheduledValues(now)
-        fizzGain.gain.setValueAtTime(Math.max(0.0001, fizzGain.gain.value), now)
-        fizzGain.gain.linearRampToValueAtTime(target, now + FADE)
-      }
-      if (fizzGate) {
-        fizzGate.gain.cancelScheduledValues(now)
-        fizzGate.gain.setValueAtTime(Math.max(0.0001, fizzGate.gain.value), now)
-        fizzGate.gain.linearRampToValueAtTime(1, now + FADE)
       }
 
       const peak = 0.9 / Math.max(3, scape.notes.length)
@@ -255,27 +263,21 @@ export function useAmbientPlayer() {
 
       activeRef.current = scape
       scheduleSparkle()
+      scheduleBubble()
 
       setCurrent(scape)
       setIsPlaying(true)
     },
-    [ensureContext, stopVoices, stopSparkle, scheduleSparkle],
+    [ensureContext, stopVoices, stopSparkle, stopBubble, scheduleSparkle, scheduleBubble],
   )
 
   const pause = useCallback(() => {
     stopVoices()
     stopSparkle()
+    stopBubble()
     activeRef.current = null
-    const ctx = ctxRef.current
-    const fizzGate = fizzGateRef.current
-    if (ctx && fizzGate) {
-      const now = ctx.currentTime
-      fizzGate.gain.cancelScheduledValues(now)
-      fizzGate.gain.setValueAtTime(Math.max(0.0001, fizzGate.gain.value), now)
-      fizzGate.gain.linearRampToValueAtTime(0.0001, now + FADE)
-    }
     setIsPlaying(false)
-  }, [stopVoices, stopSparkle])
+  }, [stopVoices, stopSparkle, stopBubble])
 
   const toggle = useCallback(
     (scape: Soundscape) => {
@@ -310,11 +312,11 @@ export function useAmbientPlayer() {
     return () => {
       stopVoices(0.05)
       stopSparkle()
+      stopBubble()
       lfoRef.current?.stop()
-      fizzSrcRef.current?.stop()
       void ctxRef.current?.close()
     }
-  }, [stopVoices, stopSparkle])
+  }, [stopVoices, stopSparkle, stopBubble])
 
   return {
     isPlaying,
