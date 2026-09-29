@@ -31,6 +31,7 @@ export function useAmbientPlayer() {
   // sparkle / fizz layers
   const sparkleBusRef = useRef<GainNode | null>(null)
   const fizzGainRef = useRef<GainNode | null>(null)
+  const fizzGateRef = useRef<GainNode | null>(null)
   const fizzSrcRef = useRef<AudioBufferSourceNode | null>(null)
   const sparkleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRef = useRef<Soundscape | null>(null)
@@ -103,16 +104,22 @@ export function useAmbientPlayer() {
     fizzBand.frequency.value = 5200
     fizzBand.Q.value = 0.8
     const fizzGain = ctx.createGain()
-    fizzGain.gain.value = 0.0001
+    fizzGain.gain.value = 0.006
+    // Dedicated on/off gate the LFO never touches, so pause fully mutes the
+    // fizz regardless of where the shimmer LFO happens to be in its cycle.
+    const fizzGate = ctx.createGain()
+    fizzGate.gain.value = 0.0001
     fizzSrc.connect(fizzBand)
     fizzBand.connect(fizzGain)
-    fizzGain.connect(master)
-    // shimmer the fizz so carbonation feels alive
+    fizzGain.connect(fizzGate)
+    fizzGate.connect(master)
+    // shimmer the fizz so carbonation feels alive — subtle, so it never
+    // overpowers the tiny base level and become audible white noise.
     const fizzLfo = ctx.createOscillator()
     fizzLfo.type = 'sine'
     fizzLfo.frequency.value = 0.7
     const fizzLfoGain = ctx.createGain()
-    fizzLfoGain.gain.value = 0.4
+    fizzLfoGain.gain.value = 0.003
     fizzLfo.connect(fizzLfoGain)
     fizzLfoGain.connect(fizzGain.gain)
     fizzSrc.start()
@@ -214,11 +221,17 @@ export function useAmbientPlayer() {
 
       // ramp the carbonation fizz to this mood's level
       const fizzGain = fizzGainRef.current
+      const fizzGate = fizzGateRef.current
       if (fizzGain) {
         const target = 0.006 + scape.fizz * 0.05
         fizzGain.gain.cancelScheduledValues(now)
         fizzGain.gain.setValueAtTime(Math.max(0.0001, fizzGain.gain.value), now)
         fizzGain.gain.linearRampToValueAtTime(target, now + FADE)
+      }
+      if (fizzGate) {
+        fizzGate.gain.cancelScheduledValues(now)
+        fizzGate.gain.setValueAtTime(Math.max(0.0001, fizzGate.gain.value), now)
+        fizzGate.gain.linearRampToValueAtTime(1, now + FADE)
       }
 
       const peak = 0.9 / Math.max(3, scape.notes.length)
@@ -254,12 +267,12 @@ export function useAmbientPlayer() {
     stopSparkle()
     activeRef.current = null
     const ctx = ctxRef.current
-    const fizzGain = fizzGainRef.current
-    if (ctx && fizzGain) {
+    const fizzGate = fizzGateRef.current
+    if (ctx && fizzGate) {
       const now = ctx.currentTime
-      fizzGain.gain.cancelScheduledValues(now)
-      fizzGain.gain.setValueAtTime(Math.max(0.0001, fizzGain.gain.value), now)
-      fizzGain.gain.linearRampToValueAtTime(0.0001, now + FADE)
+      fizzGate.gain.cancelScheduledValues(now)
+      fizzGate.gain.setValueAtTime(Math.max(0.0001, fizzGate.gain.value), now)
+      fizzGate.gain.linearRampToValueAtTime(0.0001, now + FADE)
     }
     setIsPlaying(false)
   }, [stopVoices, stopSparkle])
